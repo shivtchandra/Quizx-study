@@ -13,7 +13,7 @@ import google.generativeai as genai
 # IMPORTANT: Replace "YOUR_API_KEY" with the key you got from Google AI Studio
 try:
     # --- PASTE YOUR GOOGLE API KEY HERE ---
-    GOOGLE_API_KEY = "AIzaSyDzlDMVXfaKpWNJiPgNFN8YOiaFCGtqFlM"
+    GOOGLE_API_KEY = ""
     genai.configure(api_key=GOOGLE_API_KEY)
     gemini_model = genai.GenerativeModel('gemini-1.5-pro-latest')
     print("Gemini configured successfully.")
