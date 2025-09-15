@@ -15,6 +15,13 @@ from sequencer import AdaptiveSequencer
 
 st.set_page_config(page_title="PAL Agent", layout="wide")
 
+# --- NEW: Caching function for curriculum generation ---
+@st.cache_data(show_spinner="AI is designing your curriculum...")
+def get_cached_curriculum(topic: str) -> dict:
+    """Calls the API to generate a curriculum and caches the result."""
+    return generate_knowledge_graph(topic)
+
+
 # --- Callback function to reset the current question ---
 def clear_problem_on_change():
     """Forces a new question to be generated when the user changes a setting."""
