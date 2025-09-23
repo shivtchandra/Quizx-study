@@ -14,6 +14,7 @@ from llm_integration import (
 from sequencer import AdaptiveSequencer
 from rag_processor import process_pdf_and_generate_quiz, process_pdf_and_generate_flashcards
 
+
 st.set_page_config(
     page_title="PAL Agent",
     layout="wide",
@@ -23,9 +24,11 @@ st.set_page_config(
 # --- Session State Initialization for a Single Session ---
 if 'app_mode' not in st.session_state:
     st.session_state.app_mode = "AI Tutor (General Topics)"
+    st.session_state.model_choice = "Local AI (Llama 3)" # Default model
     st.session_state.sequencer = None
     st.session_state.knowledge_graph = None
     st.session_state.current_problem = None
+    st.session_state.current_problem_meta = None   # <--- store full_quiz metadata here
     st.session_state.review_mode = False
     st.session_state.last_solution = ""
     st.session_state.hints = []
@@ -40,6 +43,7 @@ if 'app_mode' not in st.session_state:
     st.session_state.flashcards = None
     st.session_state.current_flashcard_index = 0
     st.session_state.flashcard_flipped = False
+    st.session_state.search_online = False   # <--- added
 
 # --- Helper Function for Custom Title ---
 def custom_title(svg_code: str, title: str, subtitle: str):
@@ -65,21 +69,31 @@ USER_ICON_SVG = """
 
 ## --- Sidebar --- ##
 with st.sidebar:
+    st.header("🤖 AI Engine")
+    st.radio(
+        "Choose AI model for the Tutor:",
+        ("Local AI (Llama 3)", "Cloud AI (Gemini)"),
+        key="model_choice",
+        help="Local AI is fast and free. Cloud AI is more powerful but requires an API key in secrets.toml."
+    )
+    st.markdown("---")
+
     st.header("📚 Learning Mode")
     st.radio(
         "Choose your activity:",
-        ("AI Tutor (General Topics)", "PDF Study Assistant (Your Documents)"),
+        ("AI Tutor (General Topics)", "Study Assistant"),
         key="app_mode"
     )
     st.markdown("---")
 
     if st.session_state.app_mode == "AI Tutor (General Topics)":
         st.header("⚙️ Settings")
-        topic_input = st.text_input("Enter any topic to learn:", "Basic Python Programming")
+        topic_input = st.text_input("Enter any topic you want to learn:", "Basic Python Programming")
         if st.button("Load Curriculum", use_container_width=True):
             st.session_state.current_problem = None
+            st.session_state.current_problem_meta = None
             with st.spinner(f"AI is designing a curriculum for '{topic_input}'..."):
-                new_graph = generate_knowledge_graph(topic_input)
+                new_graph = generate_knowledge_graph(topic_input, st.session_state.model_choice)
                 if new_graph and isinstance(new_graph, dict) and len(new_graph) > 2:
                     st.session_state.knowledge_graph = new_graph
                     st.session_state.sequencer = AdaptiveSequencer(st.session_state.knowledge_graph, BKT())
@@ -92,6 +106,11 @@ with st.sidebar:
         if st.session_state.get('sequencer'):
             st.subheader("🎛️ Learning Style")
             st.radio("Style:", ("🧠 Adaptive Mode", "✏️ Practice Mode"), key="mode", label_visibility="collapsed", on_change=lambda: setattr(st.session_state, 'current_problem', None))
+            
+            # --- NEW: Show search checkbox only if Gemini is selected ---
+            if st.session_state.model_choice == "Cloud AI (Gemini)":
+                st.checkbox("Search online for interview questions", key="search_online", on_change=lambda: setattr(st.session_state, 'current_problem', None))
+
             if st.session_state.mode == "✏️ Practice Mode":
                 practice_topic_names = [info['name'] for info in st.session_state.knowledge_graph.values()]
                 st.selectbox("Skill:", options=practice_topic_names, key="practice_topic", on_change=lambda: setattr(st.session_state, 'current_problem', None))
@@ -99,43 +118,57 @@ with st.sidebar:
                 st.text_input("Sub-topic (optional):", key="sub_topic", on_change=lambda: setattr(st.session_state, 'current_problem', None))
                 st.text_area("Sample question style (optional):", key="sample_question", on_change=lambda: setattr(st.session_state, 'current_problem', None))
     
-    elif st.session_state.app_mode == "PDF Study Assistant (Your Documents)":
+    elif st.session_state.app_mode == "Study Assistant":
         st.header("📄 Your Study Material")
-        uploaded_file = st.file_uploader("Upload your PDF document", type="pdf")
-        if uploaded_file:
-            st.subheader("Study Tools")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Generate Quiz", use_container_width=True):
-                    num_q = st.session_state.get('num_questions_slider', 5)
-                    quiz_data = process_pdf_and_generate_quiz(uploaded_file, num_q)
-                    if quiz_data:
-                        st.session_state.quiz_questions = quiz_data
-                        st.session_state.flashcards = None # Deactivate other mode
-                        st.session_state.current_quiz_index = 0
-                        st.session_state.quiz_score = 0
-                        st.session_state.quiz_finished = False
-                        st.session_state.user_answers = []
-                        st.rerun()
-            with col2:
-                if st.button("Generate Flashcards", use_container_width=True):
-                    num_fc = st.session_state.get('num_flashcards_slider', 10)
-                    flashcard_data = process_pdf_and_generate_flashcards(uploaded_file, num_fc)
-                    if flashcard_data:
-                        st.session_state.flashcards = flashcard_data
-                        st.session_state.quiz_questions = None # Deactivate other mode
-                        st.session_state.current_flashcard_index = 0
-                        st.session_state.flashcard_flipped = False
-                        st.rerun()
+        source_type = st.radio("Choose your study source:", ("PDF Document", "YouTube Video"))
 
-            st.slider("Number of questions:", 1, 10, 5, key='num_questions_slider')
-            st.slider("Number of flashcards:", 5, 20, 10, key='num_flashcards_slider')
+        if source_type == "PDF Document":
+            uploaded_file = st.file_uploader("Upload your PDF document", type="pdf")
+            if uploaded_file:
+                st.subheader("Study Tools")
+                num_q = st.slider("Number of questions:", 1, 10, 5, key='num_questions_slider_pdf')
+                num_fc = st.slider("Number of flashcards:", 5, 20, 10, key='num_flashcards_slider_pdf')
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Generate Quiz", use_container_width=True):
+                        quiz_data = process_pdf_and_generate_quiz(uploaded_file, num_q)
+                        if quiz_data:
+                            st.session_state.quiz_questions = quiz_data
+                            st.session_state.flashcards = None
+                            st.session_state.current_quiz_index = 0
+                            st.session_state.quiz_score = 0
+                            st.session_state.quiz_finished = False
+                            st.session_state.user_answers = []
+                            st.rerun()
+                with col2:
+                    if st.button("Generate Flashcards", use_container_width=True):
+                        flashcard_data = process_pdf_and_generate_flashcards(uploaded_file, num_fc)
+                        if flashcard_data:
+                            st.session_state.flashcards = flashcard_data
+                            st.session_state.quiz_questions = None
+                            st.session_state.current_flashcard_index = 0
+                            st.session_state.flashcard_flipped = False
+                            st.rerun()
+        
+        # elif source_type == "YouTube Video":
+        #     youtube_url = st.text_input("Paste YouTube video URL:")
+        #     if youtube_url:
+        #         num_q_yt = st.slider("Number of questions:", 1, 10, 5, key='num_questions_slider_yt')
+        #         if st.button("Generate Quiz from Video", use_container_width=True):
+        #             quiz_data = process_youtube_and_generate_quiz(youtube_url, num_q_yt)
+        #             if quiz_data:
+        #                 st.session_state.quiz_questions = quiz_data
+        #                 st.session_state.flashcards = None
+        #                 st.session_state.current_quiz_index = 0
+        #                 st.session_state.quiz_score = 0
+        #                 st.session_state.quiz_finished = False
+        #                 st.session_state.user_answers = []
+        #                 st.rerun()
 
 # --- Main Page Logic ---
-# Check which mode is active and what content is available
 tutor_active = st.session_state.app_mode == "AI Tutor (General Topics)" and st.session_state.get('sequencer')
-quiz_active = st.session_state.app_mode == "PDF Study Assistant (Your Documents)" and st.session_state.get('quiz_questions')
-flashcards_active = st.session_state.app_mode == "PDF Study Assistant (Your Documents)" and st.session_state.get('flashcards')
+quiz_active = st.session_state.app_mode == "Study Assistant" and st.session_state.get('quiz_questions')
+flashcards_active = st.session_state.app_mode == "Study Assistant" and st.session_state.get('flashcards')
 
 if tutor_active:
     custom_title(USER_ICON_SVG, "AI Tutor", f"Mode: {st.session_state.mode}")
@@ -148,6 +181,7 @@ if tutor_active:
             if st.button("Next Question", use_container_width=True):
                 st.session_state.review_mode = False
                 st.session_state.current_problem = None
+                st.session_state.current_problem_meta = None
                 st.rerun()
         else:
             if st.session_state.get('current_problem') is None:
@@ -168,9 +202,33 @@ if tutor_active:
                     st.session_state.difficulty = difficulty
                     skill_name = st.session_state.knowledge_graph.get(next_skill_id, {}).get('name', 'Unknown Skill')
                     st.session_state.skill_name = skill_name
+
+                    # --- UPDATED: Get the search_online value ---
+                    search_online = st.session_state.get("search_online", False)
+
                     with st.spinner("Generating a new problem..."):
-                        st.session_state.current_problem = generate_question(skill_name, sub_topic, sample_question, difficulty=difficulty)
-                        st.session_state.hints = generate_hints(st.session_state.current_problem)
+                        # Request the full_quiz JSON object (if available)
+                        q_obj = generate_question(
+                            skill_name,
+                            st.session_state.model_choice,
+                            sub_topic,
+                            sample_question,
+                            st.session_state.difficulty,
+                            search_online,
+                            output_format="full_quiz"   # request structured quiz output
+                        )
+
+                        # If model returned dict -> store metadata; otherwise fallback to plain text
+                        if isinstance(q_obj, dict):
+                            st.session_state.current_problem_meta = q_obj
+                            st.session_state.current_problem = q_obj.get("question_text", "")
+                        else:
+                            st.session_state.current_problem_meta = None
+                            st.session_state.current_problem = q_obj
+
+                        # generate hints using the question text (string)
+                        st.session_state.hints = generate_hints(st.session_state.current_problem, st.session_state.model_choice)
+
                     st.session_state.skill_id = next_skill_id
                     st.session_state.hint_level = 0
                 else:
@@ -182,39 +240,72 @@ if tutor_active:
             if st.session_state.get('difficulty'): st.caption(f"Difficulty Level: **{st.session_state.difficulty}**")
             if st.session_state.current_problem != "All skills mastered!":
                 st.info(st.session_state.current_problem)
+
                 if st.session_state.get('hint_level', 0) < 3 and st.session_state.get('hints') and len(st.session_state.hints) == 3:
                     if st.button("💡 Need a hint?"):
                         st.session_state.hint_level += 1
                 for i in range(st.session_state.get('hint_level', 0)):
                     if st.session_state.hints and i < len(st.session_state.hints) and st.session_state.hints[i]:
                         st.warning(f"Hint {i+1}: {st.session_state.hints[i]}", icon="💡")
+                
+                # --- Render answer input dynamically based on question type ---
+                current_meta = st.session_state.get("current_problem_meta")
+                q_type = None
+                if isinstance(current_meta, dict):
+                    q_type = current_meta.get("question_type")
+
                 with st.form(key='answer_form', clear_on_submit=True):
-                    student_answer = st.text_area("Your Answer Here:")
+                    # Choose input widget based on question type
+                    if q_type == "MCQ":
+                        options = current_meta.get("options", []) if isinstance(current_meta, dict) else []
+                        student_answer = st.radio("Choose your answer:", options=options, index=0 if options else None)
+                    elif q_type == "Coding":
+                        student_answer = st.text_area("Paste your code here (or write a short explanation):", height=220)
+                        st.caption("For coding tasks, paste code or write the expected approach/answer.")
+                    elif q_type == "Fill in the Blank":
+                        student_answer = st.text_input("Your answer:")
+                    else:
+                        # fallback: free text / short answer
+                        student_answer = st.text_area("Your Answer Here:")
+
                     submit_button = st.form_submit_button(label="Submit Answer", use_container_width=True)
                     if submit_button:
                         with st.spinner("Checking your answer..."):
-                            is_correct = check_answer(st.session_state.current_problem, student_answer)
+                            # Local MCQ grading fallback (deterministic) when answer present in metadata
+                            is_correct = False
+                            if q_type == "MCQ" and current_meta and current_meta.get("answer") is not None:
+                                try:
+                                    is_correct = str(student_answer).strip().lower() == str(current_meta.get("answer")).strip().lower()
+                                except Exception:
+                                    is_correct = False
+                            else:
+                                # Use LLM grader for other types / fallback
+                                is_correct = check_answer(st.session_state.current_problem, student_answer, st.session_state.model_choice)
+
                         st.session_state.sequencer.update_student_knowledge(st.session_state.skill_id, is_correct)
                         if is_correct:
                             st.success("That's correct! Fantastic work!", icon="✅")
                             st.session_state.current_problem = None
+                            st.session_state.current_problem_meta = None
                             st.rerun()
                         else:
                             with st.spinner("Generating step-by-step solution..."):
-                                solution = generate_solution(st.session_state.current_problem)
+                                solution = generate_solution(st.session_state.current_problem, st.session_state.model_choice)
                                 st.session_state.last_solution = solution
                             st.session_state.review_mode = True
                             st.rerun()
+
     with knowledge_col:
         st.subheader("📊 Knowledge Map")
-        knowledge_data = st.session_state.sequencer.student_knowledge
-        skill_names = [info['name'] for info in st.session_state.knowledge_graph.values()]
-        mastery_levels = [knowledge_data.get(skill_id, 0) * 100 for skill_id in st.session_state.knowledge_graph.keys()]
-        df = pd.DataFrame({'Skill': skill_names, 'Mastery (%)': mastery_levels}).set_index('Skill')
-        st.bar_chart(df, height=400)
+        if st.session_state.get('sequencer'):
+            knowledge_data = st.session_state.sequencer.student_knowledge
+            skill_names = [info['name'] for info in st.session_state.knowledge_graph.values()]
+            mastery_levels = [knowledge_data.get(skill_id, 0) * 100 for skill_id in st.session_state.knowledge_graph.keys()]
+            df = pd.DataFrame({'Skill': skill_names, 'Mastery (%)': mastery_levels}).set_index('Skill')
+            st.bar_chart(df, height=400)
 
 elif quiz_active:
-    custom_title(USER_ICON_SVG, "PDF Study Assistant", "Quiz Mode")
+    custom_title(USER_ICON_SVG, "Study Assistant", "Quiz Mode")
     st.markdown("---")
     quiz = st.session_state.quiz_questions
     index = st.session_state.current_quiz_index
@@ -257,23 +348,23 @@ elif quiz_active:
                 else:
                     st.error(f"Your answer: **{user_ans}**", icon="❌")
                     st.info(f"Correct answer: **{correct_ans}**")
-                st.markdown("**Source from document:**")
+                st.markdown("**Source from transcript:**")
                 st.markdown(f"> {question_data.get('source_quote', 'Source not available.')}")
         if st.button("Take another quiz or create flashcards"):
             st.session_state.quiz_questions = None
             st.rerun()
 
 elif flashcards_active:
-    custom_title(USER_ICON_SVG, "PDF Study Assistant", "Flashcard Mode")
+    custom_title(USER_ICON_SVG, "Study Assistant", "Flashcard Mode")
     st.markdown("---")
     cards = st.session_state.flashcards
     index = st.session_state.current_flashcard_index
     card = cards[index]
     st.info(f"**Card {index + 1}/{len(cards)}**")
     if not st.session_state.flashcard_flipped:
-        st.markdown(f"<div style='text-align: center; font-size: 24px; padding: 50px; border: 1px solid #ccc; border-radius: 10px;'>{card['term']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; font-size: 24px; padding: 50px; border: 1px solid #ccc; border-radius: 10px;'>{card.get('term', 'N/A')}</div>", unsafe_allow_html=True)
     else:
-        st.markdown(f"<div style='text-align: center; font-size: 18px; padding: 30px; border: 1px solid #ccc; border-radius: 10px;'>{card['definition']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; font-size: 18px; padding: 30px; border: 1px solid #ccc; border-radius: 10px;'>{card.get('definition', 'N/A')}</div>", unsafe_allow_html=True)
     _, nav_col, _ = st.columns([1,2,1])
     with nav_col:
         if st.button("Flip Card 🔁", use_container_width=True):
