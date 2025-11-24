@@ -1,0 +1,9 @@
+pandas
+google-generativeai
+langchain
+langchain-community
+pypdf
+sentence-transformers
+requests
+youtube-transcript-api>=0.6.0
+faiss-cpu>=1.7.4
