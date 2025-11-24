@@ -12,7 +12,7 @@ try:
     # This securely reads the API key from your Streamlit Secrets file
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=GOOGLE_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 except (KeyError, Exception):
     gemini_model = None # Will be handled gracefully if user selects Gemini without a key
 
